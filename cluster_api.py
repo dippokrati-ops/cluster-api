@@ -61,19 +61,30 @@ def find_cluster(lat, lng):
     return None
 
 def geocode_address(address):
-    url = f"https://nominatim.openstreetmap.org/search"
-    params = {
-        "q": address + ", Greece",
-        "format": "json",
-        "limit": 1,
-        "countrycodes": "gr"
-    }
-    headers = {"User-Agent": "ClusterAPI/1.0"}
-    r = requests.get(url, params=params, headers=headers)
-    data = r.json()
-    if data:
-        return float(data[0]["lat"]), float(data[0]["lon"])
-    return None, None
+    try:
+        headers = {
+            "User-Agent": "ClusterAPI/1.0 contact@skroutzdelivery.gr",
+            "Accept-Language": "el,en"
+        }
+        r = requests.get(
+            "https://nominatim.openstreetmap.org/search",
+            params={
+                "q": address + ", Greece",
+                "format": "json",
+                "limit": 1,
+                "countrycodes": "gr",
+                "addressdetails": 1
+            },
+            headers=headers,
+            timeout=10
+        )
+        data = r.json()
+        if data and len(data) > 0:
+            return float(data[0]["lat"]), float(data[0]["lon"])
+        return None, None
+    except Exception as e:
+        print(f"Geocoding error: {e}")
+        return None, None
 
 @app.route("/lookup")
 def lookup():
@@ -87,7 +98,7 @@ def lookup():
 
     row = find_cluster(lat, lng)
     if row is None:
-        return jsonify({"error": "No cluster found for this address"}), 404
+        return jsonify({"error": "No cluster found for this address", "lat": lat, "lng": lng}), 404
 
     extra = float(row["extra_slots"]) if pd.notna(row["extra_slots"]) else 0.0
     label = get_label(extra)
