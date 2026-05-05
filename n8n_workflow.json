@@ -1,0 +1,295 @@
+{
+  "name": "Pipedrive Deal → Email → Address → Cluster Label",
+  "nodes": [
+    {
+      "parameters": {
+        "triggerOn": "dealUpdated"
+      },
+      "name": "Pipedrive Trigger",
+      "type": "n8n-nodes-base.pipedriveTrigger",
+      "typeVersion": 1,
+      "position": [200, 100],
+      "notes": "Ενεργοποιείται όταν ένα deal αλλάζει stage. Στο Pipedrive webhook φίλτραρε για το συγκεκριμένο stage_id σου."
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "number": [
+            {
+              "value1": "={{$json[\"stage_id\"]}}",
+              "operation": "equal",
+              "value2": "YOUR_STAGE_ID"
+            }
+          ]
+        }
+      },
+      "name": "IF: Correct Stage?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [420, 100],
+      "notes": "Άλλαξε YOUR_STAGE_ID με τον πραγματικό αριθμό του stage σου από το Pipedrive."
+    },
+    {
+      "parameters": {
+        "fromEmail": "you@yourcompany.com",
+        "toEmail": "={{$json[\"person\"][\"email\"][0][\"value\"]}}",
+        "subject": "YOUR_SUBJECT",
+        "emailType": "html",
+        "message": "YOUR_TEMPLATE_HTML",
+        "options": {}
+      },
+      "name": "Send Email Template",
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2,
+      "position": [640, 100],
+      "notes": "Βάλε το template σου στο message. Αποθηκεύεται το thread για να ανιχνευτεί η απάντηση."
+    },
+    {
+      "parameters": {
+        "amount": 10,
+        "unit": "days"
+      },
+      "name": "Wait 10 Days",
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1,
+      "position": [860, 100],
+      "notes": "Περιμένει μέχρι 10 μέρες. Αν έρθει resume από το Gmail Trigger νωρίτερα, προχωράει αμέσως."
+    },
+    {
+      "parameters": {
+        "triggerOn": "messageReceived",
+        "filters": {
+          "q": "in:inbox"
+        }
+      },
+      "name": "Gmail: Watch Reply",
+      "type": "n8n-nodes-base.gmailTrigger",
+      "typeVersion": 1,
+      "position": [860, 260],
+      "notes": "Παρακολουθεί το inbox. Φίλτραρε με το thread_id από το βήμα αποστολής για να πιάσεις μόνο την απάντηση σε αυτό το email."
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "string": [
+            {
+              "value1": "={{$json[\"threadId\"]}}",
+              "operation": "equal",
+              "value2": "={{$node[\"Send Email Template\"].json[\"threadId\"]}}"
+            }
+          ]
+        }
+      },
+      "name": "IF: Got Reply?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [1080, 100],
+      "notes": "TRUE = ήρθε απάντηση στο σωστό thread. FALSE = πέρασαν 10 μέρες χωρίς απάντηση."
+    },
+    {
+      "parameters": {
+        "resource": "deal",
+        "operation": "update",
+        "dealId": "={{$node[\"Pipedrive Trigger\"].json[\"id\"]}}",
+        "updateFields": {
+          "status": "lost",
+          "lost_reason": "No reply after 10 days"
+        }
+      },
+      "name": "Pipedrive: Mark Lost",
+      "type": "n8n-nodes-base.pipedrive",
+      "typeVersion": 1,
+      "position": [1300, 260],
+      "notes": "Κλείνει το deal ως Lost με αιτία 'No reply after 10 days'."
+    },
+    {
+      "parameters": {
+        "jsCode": "const body = $input.item.json.snippet || $input.item.json.body || '';\n\n// Extract Greek/Latin postal code (5 digits)\nconst tkMatch = body.match(/\\b(\\d{5})\\b/);\nconst tk = tkMatch ? tkMatch[1] : null;\n\n// Extract address (heuristic: look for street patterns)\nconst addressMatch = body.match(/([Α-Ωα-ω\\w]+\\.?\\s+\\d+[\\s,]+[Α-Ωα-ω\\w\\s]+)/u);\nconst address = addressMatch ? addressMatch[0].trim() : body.substring(0, 200);\n\nreturn [{\n  json: {\n    ...$input.item.json,\n    extracted_tk: tk,\n    extracted_address: address,\n    deal_id: $node[\"Pipedrive Trigger\"].json.id\n  }\n}];"
+      },
+      "name": "Extract TK + Address",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1300, 100],
+      "notes": "Εξάγει τον ΤΚ (5ψήφιος) και τη διεύθυνση από το body της απάντησης με regex. Προσάρμοσε το pattern αν το email έχει συγκεκριμένη μορφή."
+    },
+    {
+      "parameters": {
+        "resource": "deal",
+        "operation": "update",
+        "dealId": "={{$json[\"deal_id\"]}}",
+        "updateFields": {
+          "customFields": {
+            "ADDRESS_FIELD_KEY": "={{$json[\"extracted_address\"]}}",
+            "TK_FIELD_KEY": "={{$json[\"extracted_tk\"]}}"
+          }
+        }
+      },
+      "name": "Pipedrive: Save Address",
+      "type": "n8n-nodes-base.pipedrive",
+      "typeVersion": 1,
+      "position": [1520, 100],
+      "notes": "Αποθηκεύει διεύθυνση και ΤΚ στα custom fields του deal. Αντικατέστησε ADDRESS_FIELD_KEY και TK_FIELD_KEY με τα πραγματικά keys από το Pipedrive (Settings → Custom Fields)."
+    },
+    {
+      "parameters": {
+        "url": "=http://YOUR_SERVER_IP:5055/lookup?tk={{$json[\"extracted_tk\"]}}",
+        "options": {}
+      },
+      "name": "Cluster API Lookup",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [1740, 100],
+      "notes": "Καλεί το Flask API με τον ΤΚ. Επιστρέφει extra_slots και label. Άλλαξε YOUR_SERVER_IP με την IP του server που τρέχει το cluster_api.py."
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "string": [
+            {
+              "value1": "={{$json[\"label\"]}}",
+              "operation": "equal",
+              "value2": "error"
+            }
+          ]
+        }
+      },
+      "name": "IF: TK Found?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [1960, 100],
+      "notes": "Αν το API επιστρέψει error (ΤΚ δεν βρέθηκε), πάει στο false branch για manual handling."
+    },
+    {
+      "parameters": {
+        "resource": "deal",
+        "operation": "update",
+        "dealId": "={{$node[\"Pipedrive Trigger\"].json[\"id\"]}}",
+        "updateFields": {
+          "label": "={{$node[\"Cluster API Lookup\"].json[\"label\"]}}"
+        }
+      },
+      "name": "Pipedrive: Set Label",
+      "type": "n8n-nodes-base.pipedrive",
+      "typeVersion": 1,
+      "position": [2180, 100],
+      "notes": "Βάζει το label (Very Low / Low / Medium / Hot) στο deal. Βεβαιώσου ότι αυτά τα labels υπάρχουν ήδη στο Pipedrive Settings → Labels."
+    },
+    {
+      "parameters": {
+        "rules": {
+          "rules": [
+            {
+              "value": "Very Low"
+            },
+            {
+              "value": "Low"
+            },
+            {
+              "value": "Medium"
+            },
+            {
+              "value": "Hot"
+            }
+          ]
+        },
+        "fallbackOutput": "extra"
+      },
+      "name": "Switch: By Label",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3,
+      "position": [2400, 100],
+      "notes": "Διακλαδώνει ανάλογα με το label. Σύνδεσε κάθε output με τις ενέργειες που θέλεις."
+    },
+    {
+      "parameters": {
+        "content": "## Action: Very Low\nΠρόσθεσε εδώ τα nodes για Very Low (0-50 extra slots)",
+        "height": 120,
+        "width": 280
+      },
+      "name": "ACTION: Very Low",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [2620, 20]
+    },
+    {
+      "parameters": {
+        "content": "## Action: Low\nΠρόσθεσε εδώ τα nodes για Low (51-100 extra slots)",
+        "height": 120,
+        "width": 280
+      },
+      "name": "ACTION: Low",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [2620, 160]
+    },
+    {
+      "parameters": {
+        "content": "## Action: Medium\nΠρόσθεσε εδώ τα nodes για Medium (101-150 extra slots)",
+        "height": 120,
+        "width": 280
+      },
+      "name": "ACTION: Medium",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [2620, 300]
+    },
+    {
+      "parameters": {
+        "content": "## Action: Hot\nΠρόσθεσε εδώ τα nodes για Hot (>150 extra slots)",
+        "height": 120,
+        "width": 280
+      },
+      "name": "ACTION: Hot",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [2620, 440]
+    }
+  ],
+  "connections": {
+    "Pipedrive Trigger": {
+      "main": [[{"node": "IF: Correct Stage?", "type": "main", "index": 0}]]
+    },
+    "IF: Correct Stage?": {
+      "main": [
+        [{"node": "Send Email Template", "type": "main", "index": 0}],
+        []
+      ]
+    },
+    "Send Email Template": {
+      "main": [[{"node": "Wait 10 Days", "type": "main", "index": 0}]]
+    },
+    "Wait 10 Days": {
+      "main": [[{"node": "IF: Got Reply?", "type": "main", "index": 0}]]
+    },
+    "Gmail: Watch Reply": {
+      "main": [[{"node": "IF: Got Reply?", "type": "main", "index": 0}]]
+    },
+    "IF: Got Reply?": {
+      "main": [
+        [{"node": "Extract TK + Address", "type": "main", "index": 0}],
+        [{"node": "Pipedrive: Mark Lost", "type": "main", "index": 0}]
+      ]
+    },
+    "Extract TK + Address": {
+      "main": [[{"node": "Pipedrive: Save Address", "type": "main", "index": 0}]]
+    },
+    "Pipedrive: Save Address": {
+      "main": [[{"node": "Cluster API Lookup", "type": "main", "index": 0}]]
+    },
+    "Cluster API Lookup": {
+      "main": [[{"node": "IF: TK Found?", "type": "main", "index": 0}]]
+    },
+    "IF: TK Found?": {
+      "main": [
+        [{"node": "Pipedrive: Set Label", "type": "main", "index": 0}],
+        []
+      ]
+    },
+    "Pipedrive: Set Label": {
+      "main": [[{"node": "Switch: By Label", "type": "main", "index": 0}]]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  }
+}
